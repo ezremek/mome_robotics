@@ -72,6 +72,7 @@ void setup() {
   Serial.print("Starting UDP on port ");
   Serial.println(localPort);
   Udp.begin(localPort);
+  delay(500);
 
   for (int i = 0; i < 2; i++) {
     WiFiDrv::analogWrite(26, 250);
