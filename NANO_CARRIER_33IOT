@@ -1,0 +1,160 @@
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <OSCMessage.h>
+#include <OSCBundle.h>
+#include <OSCData.h>
+#include <utility/wifi_drv.h>
+#include <ArduinoMotorCarrier.h>
+
+static float batteryVoltage;
+static float batteryLimit;
+
+char ssid[] = "3Dp";
+char pass[] = "digitalistargy";
+
+WiFiUDP Udp;
+const IPAddress ip(192, 168, 168, 88);
+const unsigned int outPort = 9999;
+const unsigned int localPort = 8888;
+
+OSCErrorCode error;
+
+unsigned int ledR = 0;
+unsigned int ledG = 0;
+unsigned int ledB = 0;
+int motor1 = 0;
+int motor2 = 0;
+int motor3 = 0;
+int motor4 = 0;
+unsigned int ser1 = 0;
+unsigned int ser2 = 0;
+unsigned int ser3 = 0;
+unsigned int ser4 = 0;
+
+//ArduinoMotorCarrier controller;
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.config(ip);
+
+  if (controller.begin()) {
+    Serial.println("Nano Motor Carrier connected");
+    controller.reboot();
+    delay(500);
+
+    M1.setDuty(0);
+    M2.setDuty(0);
+    M3.setDuty(0);
+    M4.setDuty(0);
+  } else {
+    Serial.println("Couldn't connect to Nano Motor Carrier!");
+  }
+
+  WiFiDrv::pinMode(25, OUTPUT);
+  WiFiDrv::pinMode(26, OUTPUT);
+  WiFiDrv::pinMode(27, OUTPUT);
+  WiFiDrv::analogWrite(25, ledR);
+  WiFiDrv::analogWrite(26, ledG);
+  WiFiDrv::analogWrite(27, ledB);
+
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, pass);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+  Serial.print("Starting UDP on port ");
+  Serial.println(localPort);
+  Udp.begin(localPort);
+
+  for (int i = 0; i < 2; i++) {
+    WiFiDrv::analogWrite(26, 250);
+    delay(500);
+    WiFiDrv::analogWrite(26, 0);
+    delay(500);
+  }
+}
+
+void led1(OSCMessage &msg) {
+  ledR = msg.getInt(0);
+  WiFiDrv::analogWrite(25, ledR);
+}
+void led2(OSCMessage &msg) {
+  ledG = msg.getInt(0);
+  WiFiDrv::analogWrite(26, ledG);
+}
+void led3(OSCMessage &msg) {
+  ledB = msg.getInt(0);
+  WiFiDrv::analogWrite(27, ledB);
+}
+void motorAHandler(OSCMessage &msg) {
+  motor1 = msg.getInt(0);
+  M1.setDuty(motor1);
+}
+void motorBHandler(OSCMessage &msg) {
+  motor2 = msg.getInt(0);
+  M2.setDuty(motor2);
+}
+void motorCHandler(OSCMessage &msg) {
+  motor3 = msg.getInt(0);
+  M3.setDuty(motor3);
+}
+void motorDHandler(OSCMessage &msg) {
+  motor4 = msg.getInt(0);
+  M4.setDuty(motor4);
+}
+void servoAHandler(OSCMessage &msg) {
+  ser1 = msg.getInt(0);
+  servo1.setAngle(ser1);
+}
+void servoBHandler(OSCMessage &msg) {
+  ser2 = msg.getInt(0);
+  servo2.setAngle(ser2);
+}
+void servoCHandler(OSCMessage &msg) {
+  ser3 = msg.getInt(0);
+  servo3.setAngle(ser3);
+}
+void servoDHandler(OSCMessage &msg) {
+  ser4 = msg.getInt(0);
+  servo4.setAngle(ser4);
+}
+
+void loop() {
+  OSCBundle bundle;
+  int size = Udp.parsePacket();
+
+  if (size > 0) {
+    while (size--) {
+      bundle.fill(Udp.read());
+    }
+
+    if (!bundle.hasError()) {
+      bundle.dispatch("/ledR", led1);
+      bundle.dispatch("/ledG", led2);
+      bundle.dispatch("/ledB", led3);
+      bundle.dispatch("/motor1", motorAHandler);
+      bundle.dispatch("/motor2", motorBHandler);
+      bundle.dispatch("/motor3", motorCHandler);
+      bundle.dispatch("/motor4", motorDHandler);
+      bundle.dispatch("/ser1", servoAHandler);
+      bundle.dispatch("/ser2", servoBHandler);
+      bundle.dispatch("/ser3", servoCHandler);
+      bundle.dispatch("/ser4", servoDHandler);
+    } else {
+      error = bundle.getError();
+      Serial.print("Error: ");
+      Serial.println(error);
+    }
+
+    bundle.empty();
+  }
+
+  controller.ping();
+}
