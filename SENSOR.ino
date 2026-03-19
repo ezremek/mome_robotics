@@ -5,11 +5,11 @@
 #include <Adafruit_Sensor.h>
 
 // WiFi credentials
-const char* ssid = "dancehack";
-const char* password = "hackhack";
+const char* ssid = "HUAWEI-B535-BFC2";
+const char* password = "L6DJ5N4F385";
 
 // OSC settings
-const IPAddress outIp(192, 168, 6, 152);  // Replace with your receiver's IP
+const IPAddress outIp(192, 168, 8, 111);  // Replace with your receiver's IP
 const unsigned int outPort = 7777;        // Replace with the OSC receiver port
 WiFiUDP Udp;
 
@@ -18,7 +18,10 @@ Adafruit_BNO08x bno085;
 sh2_SensorValue_t sensorValue;
 
 unsigned long lastSendTime = 0;
+unsigned long lastBatteryCheckTime = 0;
 const int updateRate = 10;  // 100Hz = 1000ms / 100 = 10ms
+const int batteryCheckInterval = 30000;  // 30 seconds interval for battery check
+float lastBatteryPercentage = 0;  // Stores the latest battery percentage
 
 // LED blink interval
 unsigned long lastBlinkTime = 0;
@@ -39,16 +42,10 @@ struct euler_t {
 void quaternionToEuler(float qr, float qi, float qj, float qk, euler_t* ypr, bool degrees = false);
 void quaternionToCustomEuler(float qr, float qi, float qj, float qk, euler_t* ypr, bool degrees = false);
 void setLED(int red, int green, int blue);
-
+float readBatteryPercentage();
 
 void setup() {
   delay(500);
-
-  // Configure static IP for stability
-  //IPAddress local_IP(192, 168, 0, 123);
-  //IPAddress gateway(192, 168, 0, 1);
-  // IPAddress subnet(255, 255, 255, 0);
-  // WiFi.config(local_IP, gateway, subnet);
 
   // Begin WiFi connection
   WiFi.begin(ssid, password);
@@ -74,6 +71,9 @@ void setup() {
   // Set both linear acceleration and gyro integrated quaternion to 100Hz
   bno085.enableReport(SH2_LINEAR_ACCELERATION, 100);
   bno085.enableReport(SH2_GYRO_INTEGRATED_RV, 100);
+
+  // Initial battery read
+  lastBatteryPercentage = readBatteryPercentage();
 }
 
 void loop() {
@@ -100,21 +100,18 @@ void loop() {
     ledState = !ledState;  // Toggle LED state
 
     if (errorState) {
-      // Blink red at 50% brightness for WiFi error
       if (ledState) {
         setLED(led, 0, 0);  // 50% Red LED on
       } else {
         setLED(0, 0, 0);  // LED off
       }
     } else if (sensorError) {
-      // Blink purple (red + blue) at 50% brightness for sensor error
       if (ledState) {
         setLED(led, 0, led);  // 50% Purple LED on (Red + Blue)
       } else {
         setLED(0, 0, 0);  // LED off
       }
     } else {
-      // Blink green at 50% brightness if everything is working
       if (ledState) {
         setLED(0, led, 0);  // 50% Green LED on
       } else {
@@ -169,12 +166,33 @@ void loop() {
       bundle.add("/imu/customRoll").add(customYpr.roll);
     }
 
+    // Send battery status every time, updating the value only every 30 seconds
+    if (currentTime - lastBatteryCheckTime >= batteryCheckInterval) {
+      lastBatteryCheckTime = currentTime;
+      lastBatteryPercentage = readBatteryPercentage();
+    }
+    bundle.add("/battery/percentage").add(lastBatteryPercentage);
+
     // Send the OSC bundle via UDP
     Udp.beginPacket(outIp, outPort);
     bundle.send(Udp);
     Udp.endPacket();
     bundle.empty();  // Clear the bundle for reuse
   }
+}
+
+// Function to read battery voltage and return it as a percentage
+float readBatteryPercentage() {
+  int sensorValue = analogRead(ADC_BATTERY); // Use ADC_BATTERY for MKR series boards
+  // Convert the analog reading (0-1023) to a voltage (0-4.3V)
+  float batteryVoltage = sensorValue * (4.3 / 1023.0);
+
+  const float MAX_VOLTAGE = 4.2;  // Fully charged battery voltage
+  const float MIN_VOLTAGE = 3.3;  // Minimum battery voltage
+
+  // Calculate battery percentage based on MIN_VOLTAGE and MAX_VOLTAGE
+  float batteryPercentage = ((batteryVoltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE)) * 100;
+  return constrain(batteryPercentage, 0, 100);  // Return percentage clamped to 0-100%
 }
 
 // Function to control the RGB LED on the MKR1010
