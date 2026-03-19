@@ -11,7 +11,7 @@ char ssid[] = "HUAWEI-B535-BFC2";
 char pass[] = "L6DJ5N4F385";
 
 WiFiUDP Udp;
-const IPAddress ip(192, 168, 6, 88);
+const IPAddress ip(192, 168, 8, 88);
 const unsigned int localPort = 8888;
 
 OSCErrorCode error;
