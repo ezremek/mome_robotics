@@ -7,14 +7,12 @@
 #include <ArduinoMotorCarrier.h>
 
 // -------------------- WIFI --------------------
-char ssid[] = "EZREMEK";
-char pass[] = "ezremek4";
+char ssid[] = "HUAWEI-B535-BFC2";
+char pass[] = "L6DJ5N4F385";
 
 WiFiUDP Udp;
-const IPAddress ip(172, 20, 10, 33);
-const IPAddress gateway(172, 20, 10, 1);
-const IPAddress subnet(255, 255, 255, 0);
-const unsigned int localPort = 3333;
+const IPAddress ip(192, 168, 6, 88);
+const unsigned int localPort = 8888;
 
 OSCErrorCode error;
 
@@ -35,7 +33,7 @@ uint8_t ser4 = 90;
 
 // -------------------- SIGNAL TIMEOUT --------------------
 unsigned long lastPacketTime = 0;
-const unsigned long SIGNAL_TIMEOUT = 150;
+const unsigned long SIGNAL_TIMEOUT = 150; // ms
 bool signalActive = false;
 bool timeoutHandled = false;
 
@@ -75,9 +73,11 @@ void handleSignalTimeout() {
     timeoutHandled = true;
     signalActive = false;
 
+    // Stop DC motors, but keep servos at their last received positions
     stopAllMotors();
     setAllServosToStoredValues();
 
+    // Red LED indicates signal timeout
     setRGB(120, 0, 0);
 
     Serial.println("Signal timeout -> motors stopped, servos holding last position");
@@ -144,11 +144,6 @@ void servoD(OSCMessage &msg) {
 void processIncomingOSC() {
   int packetSize = Udp.parsePacket();
 
-  if (packetSize > 0) {
-    Serial.print("UDP packet received, size: ");
-    Serial.println(packetSize);
-  }
-
   while (packetSize > 0) {
     OSCBundle bundle;
 
@@ -160,8 +155,6 @@ void processIncomingOSC() {
       lastPacketTime = millis();
       signalActive = true;
       timeoutHandled = false;
-
-      Serial.println("Valid OSC bundle received");
 
       bundle.dispatch("/ledR", led1);
       bundle.dispatch("/ledG", led2);
@@ -181,6 +174,8 @@ void processIncomingOSC() {
     }
 
     bundle.empty();
+
+    // Check if more packets are waiting in the UDP buffer
     packetSize = Udp.parsePacket();
   }
 }
@@ -188,15 +183,14 @@ void processIncomingOSC() {
 // -------------------- SETUP --------------------
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-
-  WiFi.config(ip, gateway, subnet);
+  WiFi.config(ip);
 
   if (controller.begin()) {
     Serial.print("MKR Motor Carrier connected, firmware version ");
     Serial.println(controller.getFWVersion());
     controller.reboot();
     delay(500);
+
     stopAllMotors();
   } else {
     Serial.println("Couldn't connect motor shield!");
@@ -210,6 +204,7 @@ void setup() {
   WiFiDrv::pinMode(27, OUTPUT);
   setRGB(0, 0, 0);
 
+  // Set initial servo positions
   setAllServosToStoredValues();
 
   Serial.print("Connecting to ");
