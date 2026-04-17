@@ -6,10 +6,7 @@
 #include <ESP32Servo.h>
 #include <math.h>
 
-// Important: this combined test uses LEDC for DC motors.
-// On this ESP32-S3 setup, the ESP32Servo library uses fixed-frequency PWM
-// internally, which can conflict with our previous MCPWM-based motor test.
-
+// -------------------- WIFI --------------------
 const char *ssid = "goodrobot";
 const char *pass = "badr0b0t";
 
@@ -19,7 +16,8 @@ const unsigned int localPort = 8888;
 
 constexpr bool ENABLE_SERIAL_DEBUG = false;
 
-// -------------------- MOTOR PINS (PH/EN MODE) --------------------
+// -------------------- ROMEO ESP32-S3 MOTOR PINS --------------------
+// Board jumper should be in PH/EN mode.
 constexpr int M1_EN_PIN = 12;
 constexpr int M1_PH_PIN = 13;
 constexpr int M2_EN_PIN = 14;
@@ -39,6 +37,8 @@ constexpr int MOTOR_PWM_RESOLUTION = 8;
 constexpr int MOTOR_PWM_MAX_DUTY = (1 << MOTOR_PWM_RESOLUTION) - 1;
 
 // -------------------- SERVO PINS --------------------
+// 38 is multiplexed with the GDI display, and 43/44 may affect UART usage.
+// Serial debug is disabled by default so these pins stay quiet.
 constexpr int SERVO1_PIN = 3;
 constexpr int SERVO2_PIN = 38;
 constexpr int SERVO3_PIN = 43;
@@ -48,12 +48,15 @@ constexpr int SERVO_MIN_US = 500;
 constexpr int SERVO_MAX_US = 2400;
 constexpr int SERVO_FREQ_HZ = 50;
 
-// -------------------- NETWORK / SIGNAL --------------------
-constexpr unsigned long SIGNAL_TIMEOUT = 300;
+// -------------------- SIGNAL / OSC --------------------
+// Keep this low for responsive stop, but not so low that normal Wi-Fi jitter trips it.
+constexpr unsigned long SIGNAL_TIMEOUT = 120;
+constexpr size_t OSC_PACKET_BUFFER_SIZE = 512;
 
 OSCErrorCode error;
+uint8_t oscPacketBuffer[OSC_PACKET_BUFFER_SIZE];
 
-// Compatibility only: keep these OSC values so the TD patch can stay the same.
+// Keep LED values for TouchDesigner compatibility even if Romeo has no RGB LED.
 uint8_t ledR = 0;
 uint8_t ledG = 0;
 uint8_t ledB = 0;
@@ -82,6 +85,7 @@ unsigned long lastPacketTime = 0;
 bool signalActive = false;
 bool timeoutHandled = false;
 
+// -------------------- HELPERS --------------------
 int clampInt(int value, int minVal, int maxVal) {
   if (value < minVal) return minVal;
   if (value > maxVal) return maxVal;
@@ -101,6 +105,12 @@ int readOscInt(OSCMessage &msg, int index, int fallbackValue = 0) {
 void logLine(const char *label) {
   if (!ENABLE_SERIAL_DEBUG) return;
   Serial.println(label);
+}
+
+void logAttachStates() {
+  if (!ENABLE_SERIAL_DEBUG) return;
+  Serial.printf("Servo attach states: s1=%d s2=%d s3=%d s4=%d\n",
+                servo1Attached, servo2Attached, servo3Attached, servo4Attached);
 }
 
 void initMotorChannel(int enPin, int phPin, int pwmChannel) {
@@ -149,6 +159,7 @@ void stopAllMotors() {
 }
 
 bool attachServoChecked(Servo &servo, int pin) {
+  if (pin < 0) return false;
   servo.setPeriodHertz(SERVO_FREQ_HZ);
   return servo.attach(pin, SERVO_MIN_US, SERVO_MAX_US) > 0;
 }
@@ -172,7 +183,7 @@ void handleSignalTimeout() {
     signalActive = false;
     stopAllMotors();
     applyAllServos();
-    logLine("Signal timeout");
+    logLine("Signal timeout -> motors stopped, servos holding last position");
   }
 }
 
@@ -229,45 +240,84 @@ void servoD(OSCMessage &msg) {
   writeServoIfAttached(servo4, servo4Attached, ser4);
 }
 
-void processIncomingOSC() {
+bool readLatestOscPacket(size_t &packetLength) {
   int packetSize = Udp.parsePacket();
+  bool hasPacket = false;
+  bool packetTruncated = false;
 
   while (packetSize > 0) {
-    OSCBundle bundle;
+    size_t bytesStored = 0;
 
-    while (packetSize--) {
-      bundle.fill(Udp.read());
-    }
+    while (packetSize-- > 0) {
+      int incoming = Udp.read();
+      if (incoming < 0) {
+        break;
+      }
 
-    if (!bundle.hasError()) {
-      lastPacketTime = millis();
-      signalActive = true;
-      timeoutHandled = false;
-
-      bundle.dispatch("/ledR", led1);
-      bundle.dispatch("/ledG", led2);
-      bundle.dispatch("/ledB", led3);
-      bundle.dispatch("/motor1", motorA);
-      bundle.dispatch("/motor2", motorB);
-      bundle.dispatch("/motor3", motorC);
-      bundle.dispatch("/motor4", motorD);
-      bundle.dispatch("/ser1", servoA);
-      bundle.dispatch("/ser2", servoB);
-      bundle.dispatch("/ser3", servoC);
-      bundle.dispatch("/ser4", servoD);
-    } else {
-      error = bundle.getError();
-      if (ENABLE_SERIAL_DEBUG) {
-        Serial.print("OSC error: ");
-        Serial.println(error);
+      if (bytesStored < OSC_PACKET_BUFFER_SIZE) {
+        oscPacketBuffer[bytesStored++] = (uint8_t)incoming;
+      } else {
+        packetTruncated = true;
       }
     }
 
-    bundle.empty();
+    packetLength = bytesStored;
+    hasPacket = true;
     packetSize = Udp.parsePacket();
   }
+
+  if (packetTruncated) {
+    logLine("OSC packet truncated");
+  }
+
+  return hasPacket;
 }
 
+void processLatestOscPacket(const uint8_t *data, size_t length) {
+  OSCBundle bundle;
+
+  for (size_t i = 0; i < length; ++i) {
+    bundle.fill(data[i]);
+  }
+
+  if (!bundle.hasError()) {
+    lastPacketTime = millis();
+    signalActive = true;
+    timeoutHandled = false;
+
+    bundle.dispatch("/ledR", led1);
+    bundle.dispatch("/ledG", led2);
+    bundle.dispatch("/ledB", led3);
+    bundle.dispatch("/motor1", motorA);
+    bundle.dispatch("/motor2", motorB);
+    bundle.dispatch("/motor3", motorC);
+    bundle.dispatch("/motor4", motorD);
+    bundle.dispatch("/ser1", servoA);
+    bundle.dispatch("/ser2", servoB);
+    bundle.dispatch("/ser3", servoC);
+    bundle.dispatch("/ser4", servoD);
+  } else {
+    error = bundle.getError();
+    if (ENABLE_SERIAL_DEBUG) {
+      Serial.print("OSC error: ");
+      Serial.println(error);
+    }
+  }
+
+  bundle.empty();
+}
+
+// -------------------- PACKET PROCESSING --------------------
+void processIncomingOSC() {
+  size_t packetLength = 0;
+  if (!readLatestOscPacket(packetLength)) {
+    return;
+  }
+
+  processLatestOscPacket(oscPacketBuffer, packetLength);
+}
+
+// -------------------- SETUP --------------------
 void setup() {
   if (ENABLE_SERIAL_DEBUG) {
     Serial.begin(115200);
@@ -286,9 +336,11 @@ void setup() {
   servo2Attached = attachServoChecked(servo2, SERVO2_PIN);
   servo3Attached = attachServoChecked(servo3, SERVO3_PIN);
   servo4Attached = attachServoChecked(servo4, SERVO4_PIN);
-
   applyAllServos();
+  logAttachStates();
 
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
   WiFi.config(localIp, IPAddress(192, 168, 8, 1), IPAddress(255, 255, 255, 0));
   WiFi.begin(ssid, pass);
 
@@ -300,8 +352,9 @@ void setup() {
   lastPacketTime = millis();
 }
 
+// -------------------- LOOP --------------------
 void loop() {
   processIncomingOSC();
   handleSignalTimeout();
-  delay(2);
+  delay(0);
 }
